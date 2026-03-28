@@ -23,7 +23,7 @@ def calculate_angle(a, b, c):
 
 
 st.set_page_config(page_title="AMI Pose Estimation MVP", layout="wide")
-st.title("🚴‍♂️ Track Cycling Kinematics MVP")
+st.title(" Track Cycling Kinematics MVP")
 st.markdown("**NOC*NSF Ambient Intelligence Project** - MediaPipe vs MMPose Comparison")
 
 st.sidebar.header("Settings")
@@ -144,12 +144,12 @@ if uploaded_video is not None:
             
             line_color = '#1f77b4' if selected_model == "MediaPipe (Baseline)" else '#d62728'
             
-            st.markdown("### 🦵 Joint Kinematics")
+            st.markdown("###  Joint Kinematics")
             fig_knee = px.line(df, x='Frame', y='Knee Angle (Degrees)', color_discrete_sequence=[line_color])
             fig_knee.update_layout(hovermode="x unified")
             st.plotly_chart(fig_knee, use_container_width=True)
             
-            st.markdown("### 🚀 Forward Propulsion (Center of Mass)")
+            st.markdown("###  Forward Propulsion (Center of Mass)")
             fig_com = px.line(df, x='Frame', y='CoM X-Position (Pixels)', color_discrete_sequence=['#2ca02c'])
             fig_com.update_layout(hovermode="x unified")
             st.plotly_chart(fig_com, use_container_width=True)
