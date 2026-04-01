@@ -6,11 +6,13 @@ import tempfile
 import plotly.express as px
 import pandas as pd
 
+# --- 1. CACHE THE HEAVY MMPOSE MODEL ---
 @st.cache_resource
 def load_mmpose():
     from mmpose.apis import MMPoseInferencer
     return MMPoseInferencer(pose2d='human')
 
+# --- 2. MATH FUNCTIONS ---
 def calculate_angle(a, b, c):
     a = np.array(a)
     b = np.array(b)
@@ -21,13 +23,26 @@ def calculate_angle(a, b, c):
         angle = 360.0 - angle
     return angle
 
-
+# --- 3. GUI SETUP ---
 st.set_page_config(page_title="AMI Pose Estimation MVP", layout="wide")
 st.title(" Track Cycling Kinematics MVP")
 st.markdown("**NOC*NSF Ambient Intelligence Project** - MediaPipe vs MMPose Comparison")
 
+# Sidebar for controls
 st.sidebar.header("Settings")
 selected_model = st.sidebar.selectbox("Select Pose Model", ["MediaPipe (Baseline)", "MMPose (RTMPose)"])
+
+st.sidebar.markdown("---")
+st.sidebar.header("Synchronization & Calibration")
+
+# NEW: Start Frame Slider
+start_frame = st.sidebar.number_input("Starting Signal Frame (T=0)", min_value=0, value=0, step=1)
+st.sidebar.info("Adjust this to the exact frame where the starting beep occurs.")
+
+# NEW: Calibration Input
+pixels_per_meter = st.sidebar.number_input("Pixels per Meter (Calibration)", min_value=1.0, value=1000.0, step=10.0)
+st.sidebar.info("Tip: Measure a known object in the video (like a 0.67m bike wheel) in pixels to find this ratio.")
+
 
 # File uploader
 uploaded_video = st.file_uploader("Upload a video of a cyclist (.mp4, .mov)", type=["mp4", "mov"])
@@ -54,7 +69,7 @@ if uploaded_video is not None:
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         current_frame = 0
         
-    
+        # Data tracking lists
         knee_angles_over_time = []
         com_x_over_time = []
 
@@ -132,32 +147,48 @@ if uploaded_video is not None:
 
         cap.release()
         
-
+        # --- GENERATE GRAPH & EXPORT ---
         st.success("Analysis Complete!")
         
         if len(knee_angles_over_time) > 0:
+            # Assume 30 Frames Per Second (Standard Video)
+            fps = 30.0 
+            frames_array = np.array(range(len(knee_angles_over_time)))
+            
+            # 1. Calculate Time relative to the T=0 slider
+            relative_time = (frames_array - start_frame) / fps
+
+            # 2. Convert raw pixels to real-world meters
+            com_x_meters = [x / pixels_per_meter for x in com_x_over_time]
+
             df = pd.DataFrame({
-                'Frame': range(1, len(knee_angles_over_time) + 1),
+                'Absolute Frame': frames_array,
+                'Time (Seconds)': relative_time,
                 'Knee Angle (Degrees)': knee_angles_over_time,
-                'CoM X-Position (Pixels)': com_x_over_time
+                'Relative Displacement (Meters)': com_x_meters
             })
+            
+            # Only graph the data FROM the start signal onwards
+            df_display = df[df['Time (Seconds)'] >= 0]
             
             line_color = '#1f77b4' if selected_model == "MediaPipe (Baseline)" else '#d62728'
             
-            st.markdown("###  Joint Kinematics")
-            fig_knee = px.line(df, x='Frame', y='Knee Angle (Degrees)', color_discrete_sequence=[line_color])
+            st.markdown("###  Instantaneous Right Knee Extension")
+            fig_knee = px.line(df_display, x='Time (Seconds)', y='Knee Angle (Degrees)', color_discrete_sequence=[line_color])
+            fig_knee.add_vline(x=0, line_dash="dash", line_color="red", annotation_text="Start Signal")
             fig_knee.update_layout(hovermode="x unified")
             st.plotly_chart(fig_knee, use_container_width=True)
             
-            st.markdown("###  Forward Propulsion (Center of Mass)")
-            fig_com = px.line(df, x='Frame', y='CoM X-Position (Pixels)', color_discrete_sequence=['#2ca02c'])
+            st.markdown("###  Horizontal Center of Mass (CoM) Trajectory")
+            fig_com = px.line(df_display, x='Time (Seconds)', y='Relative Displacement (Meters)', color_discrete_sequence=['#2ca02c'])
+            fig_com.add_vline(x=0, line_dash="dash", line_color="red", annotation_text="Start Signal")
             fig_com.update_layout(hovermode="x unified")
             st.plotly_chart(fig_com, use_container_width=True)
             
             st.markdown("### Export Data")
             csv = df.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="📥 Download Data as CSV",
+                label=" Download Data as CSV",
                 data=csv,
                 file_name=f"cyclist_kinematics_{selected_model.split()[0].lower()}.csv",
                 mime="text/csv",
