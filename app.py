@@ -6,13 +6,11 @@ import tempfile
 import plotly.express as px
 import pandas as pd
 
-# --- 1. CACHE THE HEAVY MMPOSE MODEL ---
 @st.cache_resource
 def load_mmpose():
     from mmpose.apis import MMPoseInferencer
     return MMPoseInferencer(pose2d='human')
 
-# --- 2. MATH FUNCTIONS ---
 def calculate_angle(a, b, c):
     a = np.array(a)
     b = np.array(b)
@@ -23,7 +21,7 @@ def calculate_angle(a, b, c):
         angle = 360.0 - angle
     return angle
 
-# --- 3. GUI SETUP ---
+
 st.set_page_config(page_title="AMI Pose Estimation MVP", layout="wide")
 st.title(" Track Cycling Kinematics MVP")
 st.markdown("**NOC*NSF Ambient Intelligence Project** - MediaPipe vs MMPose Comparison")
@@ -35,11 +33,9 @@ selected_model = st.sidebar.selectbox("Select Pose Model", ["MediaPipe (Baseline
 st.sidebar.markdown("---")
 st.sidebar.header("Synchronization & Calibration")
 
-# NEW: Start Frame Slider
 start_frame = st.sidebar.number_input("Starting Signal Frame (T=0)", min_value=0, value=0, step=1)
 st.sidebar.info("Adjust this to the exact frame where the starting beep occurs.")
 
-# NEW: Calibration Input
 pixels_per_meter = st.sidebar.number_input("Pixels per Meter (Calibration)", min_value=1.0, value=1000.0, step=10.0)
 st.sidebar.info("Tip: Measure a known object in the video (like a 0.67m bike wheel) in pixels to find this ratio.")
 
@@ -147,7 +143,7 @@ if uploaded_video is not None:
 
         cap.release()
         
-        # --- GENERATE GRAPH & EXPORT ---
+
         st.success("Analysis Complete!")
         
         if len(knee_angles_over_time) > 0:
@@ -155,10 +151,8 @@ if uploaded_video is not None:
             fps = 30.0 
             frames_array = np.array(range(len(knee_angles_over_time)))
             
-            # 1. Calculate Time relative to the T=0 slider
             relative_time = (frames_array - start_frame) / fps
 
-            # 2. Convert raw pixels to real-world meters
             com_x_meters = [x / pixels_per_meter for x in com_x_over_time]
 
             df = pd.DataFrame({
@@ -167,8 +161,7 @@ if uploaded_video is not None:
                 'Knee Angle (Degrees)': knee_angles_over_time,
                 'Relative Displacement (Meters)': com_x_meters
             })
-            
-            # Only graph the data FROM the start signal onwards
+   
             df_display = df[df['Time (Seconds)'] >= 0]
             
             line_color = '#1f77b4' if selected_model == "MediaPipe (Baseline)" else '#d62728'
