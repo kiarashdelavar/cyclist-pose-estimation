@@ -395,6 +395,7 @@ def process_video(video_path, model_name, roi, side, pixels_per_meter, start_fra
             keypoints = choose_mmpose_person(predictions, roi, target_x)
 
         if keypoints is not None:
+<<<<<<< HEAD
             row = build_measurement(
                 frame_number,
                 fps,
@@ -425,6 +426,35 @@ def process_video(video_path, model_name, roi, side, pixels_per_meter, start_fra
                     ]
                 ):
                     preview_frames.append(cv2.cvtColor(live_frame, cv2.COLOR_BGR2RGB))
+=======
+         row = build_measurement(
+        frame_number,
+        fps,
+        keypoints,
+        side,
+        pixels_per_meter,
+        start_frame,
+    )
+
+    if row is not None:
+        rows.append(row)
+
+        live_frame = draw_keypoints(frame, keypoints, side)
+
+        if processed % 5 == 0:
+            live_preview.image(
+                cv2.cvtColor(live_frame, cv2.COLOR_BGR2RGB),
+                caption=f"Live analysis - frame {frame_number} - knee angle {row['knee_angle_deg']:.1f} deg",
+                use_container_width=True,
+            )
+
+        if len(preview_frames) < 5 or frame_number in [
+            start_frame,
+            start_frame + int(fps * 0.25),
+            start_frame + int(fps * 0.5),
+        ]:
+            preview_frames.append(cv2.cvtColor(live_frame, cv2.COLOR_BGR2RGB))
+>>>>>>> e9fcebb (updated some parts)
 
     cap.release()
     progress.empty()
