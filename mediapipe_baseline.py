@@ -40,28 +40,36 @@ while cap.isOpened():
     image_rgb.flags.writeable = False
     results = pose.process(image_rgb)
     image_rgb.flags.writeable = True
+    
     try:
-        landmarks = results.pose_landmarks.landmark
-        h, w, _ = frame.shape
-        
-        hip = [landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].x, landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].y]
-        knee = [landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value].x, landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value].y]
-        ankle = [landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE.value].x, landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE.value].y]
-        
+        if results.pose_landmarks:
+            landmarks = results.pose_landmarks.landmark
+            h, w, _ = frame.shape
+            
+            # get the X coordinate of the hip
+            hip_x = landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].x
+            
+    
+            if hip_x < 0.65: 
+                
+                hip = [hip_x, landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].y]
+                knee = [landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value].x, landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value].y]
+                ankle = [landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE.value].x, landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE.value].y]
 
-        angle = calculate_angle(hip, knee, ankle)
-        knee_angles_over_time.append(angle)
+                angle = calculate_angle(hip, knee, ankle)
+                knee_angles_over_time.append(angle)
 
-        knee_pixel_coords = tuple(np.multiply(knee, [w, h]).astype(int))
-        cv2.putText(frame, str(int(angle)), 
-                    knee_pixel_coords, 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-                    
-    except:
+                knee_pixel_coords = tuple(np.multiply(knee, [w, h]).astype(int))
+                cv2.putText(frame, str(int(angle)), 
+                            knee_pixel_coords, 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+                            
+
+                mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                
+    except Exception as e:
+        print("Error:", e)
         pass
-
-    if results.pose_landmarks:
-        mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
     cv2.imshow('MediaPipe Pose Baseline - With Angles', frame)
 
