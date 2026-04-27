@@ -59,8 +59,10 @@ def get_frame(video_path, frame_number):
     cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_number))
     success, frame = cap.read()
     cap.release()
-    if not success:
+
+    if not success or frame is None:
         return None
+
     return frame
 
 
@@ -78,10 +80,12 @@ def make_roi(width, height, roi_mode, custom_roi):
     x2 = int(width * custom_roi[1] / 100)
     y1 = int(height * custom_roi[2] / 100)
     y2 = int(height * custom_roi[3] / 100)
+
     x1 = max(0, min(x1, width - 1))
     x2 = max(x1 + 1, min(x2, width))
     y1 = max(0, min(y1, height - 1))
     y2 = max(y1 + 1, min(y2, height))
+
     return x1, y1, x2 - x1, y2 - y1
 
 
@@ -102,20 +106,25 @@ def calculate_angle(a, b, c):
     c = np.array(c, dtype=float)
     radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
     angle = abs(radians * 180.0 / np.pi)
+
     if angle > 180.0:
         angle = 360.0 - angle
+
     return angle
 
 
 def safe_point(keypoints, index):
     if keypoints is None or len(keypoints) <= index:
         return None
+
     point = keypoints[index]
     if point is None or len(point) < 2:
         return None
+
     x, y = float(point[0]), float(point[1])
     if np.isnan(x) or np.isnan(y):
         return None
+
     return [x, y]
 
 
@@ -138,6 +147,7 @@ def build_measurement(frame_number, fps, keypoints, side, pixels_per_meter, star
         return None
 
     body_points = [p for p in [left_shoulder, right_shoulder, left_hip, right_hip] if p is not None]
+
     if len(body_points) >= 2:
         com_x_px = float(np.mean([p[0] for p in body_points]))
         com_y_px = float(np.mean([p[1] for p in body_points]))
@@ -161,6 +171,9 @@ def build_measurement(frame_number, fps, keypoints, side, pixels_per_meter, star
 
 
 def draw_keypoints(frame, keypoints, side):
+    if frame is None or keypoints is None:
+        return None
+
     output = frame.copy()
     pairs = [
         (5, 6),
@@ -172,6 +185,7 @@ def draw_keypoints(frame, keypoints, side):
         (12, 14),
         (14, 16),
     ]
+
     for a, b in pairs:
         pa = safe_point(keypoints, a)
         pb = safe_point(keypoints, b)
@@ -179,7 +193,7 @@ def draw_keypoints(frame, keypoints, side):
             cv2.line(output, (int(pa[0]), int(pa[1])), (int(pb[0]), int(pb[1])), (0, 220, 0), 2)
 
     for point in keypoints:
-        if len(point) >= 2:
+        if point is not None and len(point) >= 2:
             cv2.circle(output, (int(point[0]), int(point[1])), 4, (0, 220, 0), -1)
 
     if side == "Right body side":
@@ -193,7 +207,15 @@ def draw_keypoints(frame, keypoints, side):
 
     if hip is not None and knee is not None and ankle is not None:
         angle = calculate_angle(hip, knee, ankle)
-        cv2.putText(output, f"{angle:.0f} deg", (int(knee[0]), int(knee[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 0), 2)
+        cv2.putText(
+            output,
+            f"{angle:.0f} deg",
+            (int(knee[0]), int(knee[1]) - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 220, 0),
+            2,
+        )
 
     return output
 
@@ -203,6 +225,7 @@ def auto_detect_start_frame(video_path):
     try:
         video = VideoFileClip(video_path)
         fps = float(video.fps or 30.0)
+
         if video.audio is None:
             video.close()
             return 0, 0.0, "No audio was found."
@@ -220,6 +243,7 @@ def auto_detect_start_frame(video_path):
 
         onset = librosa.onset.onset_strength(y=y, sr=sr)
         times = librosa.frames_to_time(np.arange(len(onset)), sr=sr)
+
         if len(onset) == 0:
             return 0, 0.0, "No clear sound peak was found."
 
@@ -231,12 +255,16 @@ def auto_detect_start_frame(video_path):
 
         beep_time = float(times[best_index])
         start_frame = int(round(beep_time * fps))
+
         return start_frame, beep_time, "Start sound found. Please check it in the video."
     except Exception as error:
         return 0, 0.0, f"Audio check failed: {error}"
 
 
 def detect_wheel_pixels(frame, roi, wheel_diameter_m):
+    if frame is None:
+        return None, None, "No frame was found."
+
     area = crop_frame(frame, roi)
     gray = cv2.cvtColor(area, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (9, 9), 2)
@@ -265,6 +293,7 @@ def detect_wheel_pixels(frame, roi, wheel_diameter_m):
     rx, ry, _, _ = roi
     center = (int(x + rx), int(y + ry))
     radius = int(r)
+
     cv2.circle(preview, center, radius, (0, 220, 0), 3)
     cv2.circle(preview, center, 4, (0, 220, 0), -1)
 
@@ -284,11 +313,13 @@ def choose_mmpose_person(predictions, roi, target_x):
         left_hip = safe_point(keypoints, KEYPOINTS["left_hip"])
         right_hip = safe_point(keypoints, KEYPOINTS["right_hip"])
         hips = [p for p in [left_hip, right_hip] if p is not None]
+
         if not hips:
             continue
 
         hip_x = float(np.mean([p[0] for p in hips]))
         hip_y = float(np.mean([p[1] for p in hips]))
+
         if not point_in_roi((hip_x, hip_y), roi):
             continue
 
@@ -326,18 +357,23 @@ def process_video(video_path, model_name, roi, side, pixels_per_meter, start_fra
     processed = 0
     progress = st.progress(0)
     status = st.empty()
+    live_preview = st.empty()
 
     while cap.isOpened():
         success, frame = cap.read()
-        if not success:
+
+        if not success or frame is None:
             break
+
         frame_number += 1
 
         if max_frames > 0 and processed >= max_frames:
             break
 
         processed += 1
-        progress.progress(min(processed / min(total_frames, max_frames if max_frames > 0 else total_frames), 1.0))
+        progress_total = min(total_frames, max_frames if max_frames > 0 else total_frames)
+        if progress_total > 0:
+            progress.progress(min(processed / progress_total, 1.0))
         status.write(f"Processing frame {frame_number} of {total_frames}")
 
         keypoints = None
@@ -359,11 +395,36 @@ def process_video(video_path, model_name, roi, side, pixels_per_meter, start_fra
             keypoints = choose_mmpose_person(predictions, roi, target_x)
 
         if keypoints is not None:
-            row = build_measurement(frame_number, fps, keypoints, side, pixels_per_meter, start_frame)
+            row = build_measurement(
+                frame_number,
+                fps,
+                keypoints,
+                side,
+                pixels_per_meter,
+                start_frame,
+            )
+
             if row is not None:
                 rows.append(row)
-                if len(preview_frames) < 5 or frame_number in [start_frame, start_frame + int(fps * 0.25), start_frame + int(fps * 0.5)]:
-                    preview_frames.append(cv2.cvtColor(draw_keypoints(frame, keypoints, side), cv2.COLOR_BGR2RGB))
+                live_frame = draw_keypoints(frame, keypoints, side)
+
+                if live_frame is not None and processed % 5 == 0:
+                    live_preview.image(
+                        cv2.cvtColor(live_frame, cv2.COLOR_BGR2RGB),
+                        caption=f"Live analysis - frame {frame_number} - knee angle {row['knee_angle_deg']:.1f} deg",
+                        use_container_width=True,
+                    )
+
+                if live_frame is not None and (
+                    len(preview_frames) < 5
+                    or frame_number
+                    in [
+                        start_frame,
+                        start_frame + int(fps * 0.25),
+                        start_frame + int(fps * 0.5),
+                    ]
+                ):
+                    preview_frames.append(cv2.cvtColor(live_frame, cv2.COLOR_BGR2RGB))
 
     cap.release()
     progress.empty()
@@ -408,6 +469,7 @@ def add_metrics(df, fps):
     df["hip_speed_smooth_m_s"] = df["hip_speed_m_s"].rolling(window=5, min_periods=1, center=True).mean()
     df["hip_forward_velocity_smooth_m_s"] = df["hip_forward_velocity_m_s"].rolling(window=5, min_periods=1, center=True).mean()
     df["knee_angle_smooth_deg"] = df["knee_angle_deg"].rolling(window=5, min_periods=1, center=True).mean()
+
     return df
 
 
@@ -481,6 +543,7 @@ model_name = st.sidebar.selectbox("Pose model", ["MediaPipe", "MMPose"])
 body_side = st.sidebar.selectbox("Body side for knee angle", ["Right body side", "Left body side"])
 roi_mode = st.sidebar.selectbox("Rider area", ["Full video", "Left side", "Middle", "Right side", "Custom"])
 custom_roi = (0, 100, 0, 100)
+
 if roi_mode == "Custom":
     x_range = st.sidebar.slider("Area left and right percent", 0, 100, (0, 100))
     y_range = st.sidebar.slider("Area top and bottom percent", 0, 100, (0, 100))
@@ -519,8 +582,11 @@ if first_frame is not None:
 
 if st.sidebar.button("Try wheel scale") and first_frame is not None:
     found_ppm, wheel_preview, wheel_message = detect_wheel_pixels(first_frame, roi, wheel_diameter_m)
-    st.session_state["wheel_preview"] = cv2.cvtColor(wheel_preview, cv2.COLOR_BGR2RGB)
     st.session_state["wheel_message"] = wheel_message
+
+    if wheel_preview is not None:
+        st.session_state["wheel_preview"] = cv2.cvtColor(wheel_preview, cv2.COLOR_BGR2RGB)
+
     if found_ppm is not None:
         st.session_state["pixels_per_meter"] = float(found_ppm)
 
@@ -588,12 +654,22 @@ if run_analysis:
     tab1, tab2, tab3, tab4 = st.tabs(["Hip velocity", "Body movement", "Knee angle", "Data"])
 
     with tab1:
-        fig = px.line(plot_df, x="time_s", y="hip_forward_velocity_smooth_m_s", labels={"time_s": "Time from start (s)", "hip_forward_velocity_smooth_m_s": "Hip forward velocity (m/s)"})
+        fig = px.line(
+            plot_df,
+            x="time_s",
+            y="hip_forward_velocity_smooth_m_s",
+            labels={"time_s": "Time from start (s)", "hip_forward_velocity_smooth_m_s": "Hip forward velocity (m/s)"},
+        )
         add_start_line(fig)
         st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        fig = px.line(plot_df, x="time_s", y="com_forward_m", labels={"time_s": "Time from start (s)", "com_forward_m": "Body forward movement (m)"})
+        fig = px.line(
+            plot_df,
+            x="time_s",
+            y="com_forward_m",
+            labels={"time_s": "Time from start (s)", "com_forward_m": "Body forward movement (m)"},
+        )
         add_start_line(fig)
         fig.add_hline(y=0.30, line_dash="dash", annotation_text="30 cm")
         st.plotly_chart(fig, use_container_width=True)
@@ -602,7 +678,12 @@ if run_analysis:
         st.plotly_chart(fig2, use_container_width=True)
 
     with tab3:
-        fig = px.line(plot_df, x="time_s", y="knee_angle_smooth_deg", labels={"time_s": "Time from start (s)", "knee_angle_smooth_deg": "Knee angle (degree)"})
+        fig = px.line(
+            plot_df,
+            x="time_s",
+            y="knee_angle_smooth_deg",
+            labels={"time_s": "Time from start (s)", "knee_angle_smooth_deg": "Knee angle (degree)"},
+        )
         add_start_line(fig)
         st.plotly_chart(fig, use_container_width=True)
 
