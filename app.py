@@ -40,6 +40,47 @@ def clean_name(name):
     return "_".join(name.strip().lower().split())
 
 
+def normalize_signal(values):
+    values = np.asarray(values, dtype=float)
+
+    if len(values) == 0:
+        return values
+
+    min_value = np.min(values)
+    max_value = np.max(values)
+
+    if max_value - min_value == 0:
+        return np.zeros_like(values)
+
+    return (values - min_value) / (max_value - min_value)
+
+
+def clamp_frame(frame_number, total_frames):
+    max_frame = max(total_frames - 1, 0)
+    return max(0, min(int(frame_number), max_frame))
+
+
+def reset_video_state_if_new_video(uploaded_video, total_frames, fps):
+    video_id = f"{uploaded_video.name}_{uploaded_video.size}_{total_frames}_{fps}"
+
+    if st.session_state.get("current_video_id") != video_id:
+        keys_to_clear = [
+            "start_frame",
+            "detected_gun_time",
+            "audio_candidates_df",
+            "audio_df",
+            "wheel_preview",
+            "wheel_message",
+            "pixels_per_meter",
+        ]
+
+        for key in keys_to_clear:
+            if key in st.session_state:
+                del st.session_state[key]
+
+        st.session_state["current_video_id"] = video_id
+
+
 def get_video_info(video_path):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -104,6 +145,7 @@ def calculate_angle(a, b, c):
     a = np.array(a, dtype=float)
     b = np.array(b, dtype=float)
     c = np.array(c, dtype=float)
+
     radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
     angle = abs(radians * 180.0 / np.pi)
 
@@ -122,6 +164,7 @@ def safe_point(keypoints, index):
         return None
 
     x, y = float(point[0]), float(point[1])
+
     if np.isnan(x) or np.isnan(y):
         return None
 
@@ -175,6 +218,7 @@ def draw_keypoints(frame, keypoints, side):
         return None
 
     output = frame.copy()
+
     pairs = [
         (5, 6),
         (5, 11),
@@ -189,6 +233,7 @@ def draw_keypoints(frame, keypoints, side):
     for a, b in pairs:
         pa = safe_point(keypoints, a)
         pb = safe_point(keypoints, b)
+
         if pa is not None and pb is not None:
             cv2.line(output, (int(pa[0]), int(pa[1])), (int(pb[0]), int(pb[1])), (0, 220, 0), 2)
 
@@ -221,44 +266,167 @@ def draw_keypoints(frame, keypoints, side):
 
 
 @st.cache_data(show_spinner=False)
-def auto_detect_start_frame(video_path):
+def detect_start_gun_frame(video_path, search_start_s=0.0, search_end_s=None, selection_mode="Last strong peak"):
     try:
         video = VideoFileClip(video_path)
         fps = float(video.fps or 30.0)
 
         if video.audio is None:
             video.close()
-            return 0, 0.0, "No audio was found."
+            return 0, 0.0, "No audio was found.", pd.DataFrame(), pd.DataFrame()
 
         temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
         temp_audio.close()
+
         video.audio.write_audiofile(temp_audio.name, logger=None)
         video.close()
 
         y, sr = librosa.load(temp_audio.name, sr=None, mono=True)
-        os.remove(temp_audio.name)
+
+        if os.path.exists(temp_audio.name):
+            os.remove(temp_audio.name)
 
         if y.size == 0:
-            return 0, 0.0, "The audio is empty."
+            return 0, 0.0, "The audio is empty.", pd.DataFrame(), pd.DataFrame()
 
-        onset = librosa.onset.onset_strength(y=y, sr=sr)
-        times = librosa.frames_to_time(np.arange(len(onset)), sr=sr)
+        hop_length = 256
+        frame_length = 1024
 
-        if len(onset) == 0:
-            return 0, 0.0, "No clear sound peak was found."
+        volume = librosa.feature.rms(
+            y=y,
+            frame_length=frame_length,
+            hop_length=hop_length,
+        )[0]
 
-        limit = max(1, int(len(onset) * 0.98))
-        search = onset[:limit]
-        threshold = np.percentile(search, 95)
-        candidates = np.where(search >= threshold)[0]
-        best_index = int(candidates[0]) if len(candidates) > 0 else int(np.argmax(search))
+        onset = librosa.onset.onset_strength(
+            y=y,
+            sr=sr,
+            hop_length=hop_length,
+        )
 
-        beep_time = float(times[best_index])
-        start_frame = int(round(beep_time * fps))
+        volume_change = np.abs(np.diff(volume, prepend=volume[0]))
 
-        return start_frame, beep_time, "Start sound found. Please check it in the video."
+        times = librosa.frames_to_time(
+            np.arange(len(volume)),
+            sr=sr,
+            hop_length=hop_length,
+        )
+
+        min_length = min(len(times), len(volume), len(onset), len(volume_change))
+        times = times[:min_length]
+        volume = volume[:min_length]
+        onset = onset[:min_length]
+        volume_change = volume_change[:min_length]
+
+        if len(times) == 0:
+            return 0, 0.0, "No clear sound was found.", pd.DataFrame(), pd.DataFrame()
+
+        video_duration = float(times[-1])
+
+        if search_end_s is None or search_end_s <= search_start_s:
+            search_end_s = video_duration
+
+        search_start_s = max(0.0, float(search_start_s))
+        search_end_s = min(float(search_end_s), video_duration)
+
+        volume_norm = normalize_signal(volume)
+        onset_norm = normalize_signal(onset)
+        volume_change_norm = normalize_signal(volume_change)
+
+        gun_score = (
+            0.50 * volume_norm
+            + 0.35 * onset_norm
+            + 0.15 * volume_change_norm
+        )
+
+        gun_score_norm = normalize_signal(gun_score)
+
+        full_audio_df = pd.DataFrame(
+            {
+                "time_s": times,
+                "volume": volume_norm,
+                "onset": onset_norm,
+                "volume_change": volume_change_norm,
+                "gun_score": gun_score_norm,
+            }
+        )
+
+        mask = (times >= search_start_s) & (times <= search_end_s)
+
+        if not np.any(mask):
+            return 0, 0.0, "No audio was found in this search window.", pd.DataFrame(), full_audio_df
+
+        window_times = times[mask]
+        window_scores = gun_score_norm[mask]
+        window_volume = volume_norm[mask]
+        window_onset = onset_norm[mask]
+        window_change = volume_change_norm[mask]
+
+        if len(window_scores) == 0:
+            return 0, 0.0, "No sound was found in this search window.", pd.DataFrame(), full_audio_df
+
+        strong_threshold = max(0.45, float(np.percentile(window_scores, 90)))
+
+        peak_rows = []
+
+        for index in range(1, len(window_scores) - 1):
+            is_local_peak = (
+                window_scores[index] >= window_scores[index - 1]
+                and window_scores[index] >= window_scores[index + 1]
+            )
+
+            is_strong = window_scores[index] >= strong_threshold
+
+            if is_local_peak and is_strong:
+                peak_rows.append(
+                    {
+                        "time_s": float(window_times[index]),
+                        "frame": int(round(float(window_times[index]) * fps)),
+                        "gun_score": float(window_scores[index]),
+                        "volume": float(window_volume[index]),
+                        "onset": float(window_onset[index]),
+                        "volume_change": float(window_change[index]),
+                    }
+                )
+
+        candidates_df = pd.DataFrame(peak_rows)
+
+        if candidates_df.empty:
+            best_index = int(np.argmax(window_scores))
+
+            candidates_df = pd.DataFrame(
+                [
+                    {
+                        "time_s": float(window_times[best_index]),
+                        "frame": int(round(float(window_times[best_index]) * fps)),
+                        "gun_score": float(window_scores[best_index]),
+                        "volume": float(window_volume[best_index]),
+                        "onset": float(window_onset[best_index]),
+                        "volume_change": float(window_change[best_index]),
+                    }
+                ]
+            )
+
+        candidates_df = candidates_df.sort_values("time_s").reset_index(drop=True)
+
+        if selection_mode == "First strong peak":
+            selected_row = candidates_df.iloc[0]
+        elif selection_mode == "Strongest peak":
+            selected_row = candidates_df.sort_values("gun_score", ascending=False).iloc[0]
+        else:
+            selected_row = candidates_df.iloc[-1]
+
+        best_time = float(selected_row["time_s"])
+        best_frame = int(selected_row["frame"])
+
+        candidates_df = candidates_df.sort_values("gun_score", ascending=False).head(10).reset_index(drop=True)
+
+        message = "Start gun found. Check the graph and candidates."
+
+        return best_frame, best_time, message, candidates_df, full_audio_df
+
     except Exception as error:
-        return 0, 0.0, f"Audio check failed: {error}"
+        return 0, 0.0, f"Audio check failed: {error}", pd.DataFrame(), pd.DataFrame()
 
 
 def detect_wheel_pixels(frame, roi, wheel_diameter_m):
@@ -284,11 +452,13 @@ def detect_wheel_pixels(frame, roi, wheel_diameter_m):
     )
 
     preview = frame.copy()
+
     if circles is None:
         return None, preview, "No clear wheel circle was found. Use manual calibration."
 
     circles = np.round(circles[0, :]).astype("int")
     circles = sorted(circles, key=lambda c: c[2], reverse=True)
+
     x, y, r = circles[0]
     rx, ry, _, _ = roi
     center = (int(x + rx), int(y + ry))
@@ -298,6 +468,7 @@ def detect_wheel_pixels(frame, roi, wheel_diameter_m):
     cv2.circle(preview, center, 4, (0, 220, 0), -1)
 
     pixels_per_meter = (2 * radius) / wheel_diameter_m
+
     return pixels_per_meter, preview, "Wheel circle found. Please check if the circle is on the wheel."
 
 
@@ -307,6 +478,7 @@ def choose_mmpose_person(predictions, roi, target_x):
 
     for person in predictions:
         keypoints = person.get("keypoints")
+
         if keypoints is None:
             continue
 
@@ -325,6 +497,7 @@ def choose_mmpose_person(predictions, roi, target_x):
 
         xs = [float(p[0]) for p in keypoints if len(p) >= 2]
         ys = [float(p[1]) for p in keypoints if len(p) >= 2]
+
         body_area = (max(xs) - min(xs)) * (max(ys) - min(ys)) if xs and ys else 0
         distance_penalty = abs(hip_x - target_x)
         score = body_area - distance_penalty * 5
@@ -355,6 +528,7 @@ def process_video(video_path, model_name, roi, side, pixels_per_meter, start_fra
     preview_frames = []
     frame_number = -1
     processed = 0
+
     progress = st.progress(0)
     status = st.empty()
     live_preview = st.empty()
@@ -372,8 +546,10 @@ def process_video(video_path, model_name, roi, side, pixels_per_meter, start_fra
 
         processed += 1
         progress_total = min(total_frames, max_frames if max_frames > 0 else total_frames)
+
         if progress_total > 0:
             progress.progress(min(processed / progress_total, 1.0))
+
         status.write(f"Processing frame {frame_number} of {total_frames}")
 
         keypoints = None
@@ -386,6 +562,7 @@ def process_video(video_path, model_name, roi, side, pixels_per_meter, start_fra
 
             if result.pose_landmarks:
                 keypoints = []
+
                 for lm in result.pose_landmarks.landmark:
                     keypoints.append([lm.x * w + x, lm.y * h + y])
         else:
@@ -435,15 +612,18 @@ def process_video(video_path, model_name, roi, side, pixels_per_meter, start_fra
 
     df = pd.DataFrame(rows)
     df = add_metrics(df, fps)
+
     return df, preview_frames, fps
 
 
 def add_metrics(df, fps):
     df = df.sort_values("absolute_frame").reset_index(drop=True)
+
     dt = df["absolute_frame"].diff() / fps
     dt = dt.replace(0, np.nan)
 
     start_rows = df[df["time_s"] >= 0]
+
     if len(start_rows) > 0:
         start_com_x = float(start_rows.iloc[0]["com_x_m"])
         start_hip_x = float(start_rows.iloc[0]["hip_x_m"])
@@ -452,8 +632,10 @@ def add_metrics(df, fps):
         start_hip_x = float(df.iloc[0]["hip_x_m"])
 
     after_start = df[(df["time_s"] >= 0) & (df["time_s"] <= 0.8)]
+
     if len(after_start) > 3:
         forward_sign = np.sign(after_start["com_x_m"].median() - start_com_x)
+
         if forward_sign == 0:
             forward_sign = 1
     else:
@@ -466,6 +648,7 @@ def add_metrics(df, fps):
     df["hip_dy_m"] = df["hip_y_m"].diff()
     df["hip_speed_m_s"] = np.sqrt(df["hip_dx_m"] ** 2 + df["hip_dy_m"] ** 2) / dt
     df["hip_forward_velocity_m_s"] = df["hip_forward_m"].diff() / dt
+
     df["hip_speed_smooth_m_s"] = df["hip_speed_m_s"].rolling(window=5, min_periods=1, center=True).mean()
     df["hip_forward_velocity_smooth_m_s"] = df["hip_forward_velocity_m_s"].rolling(window=5, min_periods=1, center=True).mean()
     df["knee_angle_smooth_deg"] = df["knee_angle_deg"].rolling(window=5, min_periods=1, center=True).mean()
@@ -492,11 +675,13 @@ def get_metric_summary(df):
 
     t_30cm = np.nan
     reached = after[after["com_forward_m"] >= 0.30]
+
     if len(reached) > 0:
         t_30cm = float(reached.iloc[0]["time_s"])
 
     peak_before = np.nan
     peak_time_before = np.nan
+
     if len(before) > 0:
         peak_index = before["hip_forward_velocity_smooth_m_s"].idxmax()
         peak_before = float(df.loc[peak_index, "hip_forward_velocity_smooth_m_s"])
@@ -532,16 +717,20 @@ with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_
     video_path = temp_video.name
 
 fps, total_frames, width, height = get_video_info(video_path)
+video_duration_s = total_frames / fps if fps > 0 else 0.0
+reset_video_state_if_new_video(uploaded_video, total_frames, fps)
 
 st.sidebar.header("Video data")
 st.sidebar.write(f"Frames: {total_frames}")
 st.sidebar.write(f"FPS: {fps:.2f}")
 st.sidebar.write(f"Size: {width} x {height}")
+st.sidebar.write(f"Duration: {video_duration_s:.2f} s")
 
 st.sidebar.header("Rider selection")
 model_name = st.sidebar.selectbox("Pose model", ["MediaPipe", "MMPose"])
 body_side = st.sidebar.selectbox("Body side for knee angle", ["Right body side", "Left body side"])
 roi_mode = st.sidebar.selectbox("Rider area", ["Full video", "Left side", "Middle", "Right side", "Custom"])
+
 custom_roi = (0, 100, 0, 100)
 
 if roi_mode == "Custom":
@@ -553,27 +742,109 @@ roi = make_roi(width, height, roi_mode, custom_roi)
 target_x = roi[0] + roi[2] / 2
 
 st.sidebar.header("Start time")
-if st.sidebar.button("Find start sound"):
-    detected_frame, detected_time, message = auto_detect_start_frame(video_path)
+
+audio_search_start = st.sidebar.number_input(
+    "Search gun after seconds",
+    min_value=0.0,
+    max_value=float(video_duration_s),
+    value=0.0,
+    step=1.0,
+)
+
+audio_search_end = st.sidebar.number_input(
+    "Search gun before seconds",
+    min_value=0.0,
+    max_value=float(video_duration_s),
+    value=float(video_duration_s),
+    step=1.0,
+)
+
+gun_selection_mode = st.sidebar.selectbox(
+    "Gun detection mode",
+    ["Last strong peak", "Strongest peak", "First strong peak"],
+)
+
+if st.sidebar.button("Find start gun"):
+    detected_frame, detected_time, message, candidates_df, audio_df = detect_start_gun_frame(
+        video_path,
+        audio_search_start,
+        audio_search_end,
+        gun_selection_mode,
+    )
+
+    detected_frame = clamp_frame(detected_frame, total_frames)
+
     st.session_state["start_frame"] = detected_frame
+    st.session_state["detected_gun_time"] = detected_time
+    st.session_state["audio_candidates_df"] = candidates_df
+    st.session_state["audio_df"] = audio_df
+
     st.sidebar.write(message)
     st.sidebar.write(f"Frame: {detected_frame}")
     st.sidebar.write(f"Time: {detected_time:.3f} s")
 
+max_start_frame = max(total_frames - 1, 0)
+saved_start_frame = int(st.session_state.get("start_frame", 0))
+saved_start_frame = clamp_frame(saved_start_frame, total_frames)
+st.session_state["start_frame"] = saved_start_frame
+
 start_frame = st.sidebar.number_input(
     "Start frame",
     min_value=0,
-    max_value=max(total_frames - 1, 0),
-    value=int(st.session_state.get("start_frame", 0)),
+    max_value=max_start_frame,
+    value=saved_start_frame,
     step=1,
 )
+
+if "audio_df" in st.session_state and not st.session_state["audio_df"].empty:
+    st.subheader("Start gun check")
+
+    audio_df = st.session_state["audio_df"]
+    detected_gun_time = st.session_state.get("detected_gun_time", 0.0)
+
+    audio_plot_df = audio_df[
+        (audio_df["time_s"] >= audio_search_start)
+        & (audio_df["time_s"] <= audio_search_end)
+    ].copy()
+
+    audio_fig = px.line(
+        audio_plot_df,
+        x="time_s",
+        y="gun_score",
+        labels={
+            "time_s": "Video time (s)",
+            "gun_score": "Start gun score",
+        },
+    )
+
+    audio_fig.add_vline(
+        x=detected_gun_time,
+        line_dash="dash",
+        annotation_text="Detected start gun",
+    )
+
+    st.plotly_chart(audio_fig, use_container_width=True)
+
+if "audio_candidates_df" in st.session_state and not st.session_state["audio_candidates_df"].empty:
+    st.write("Best start gun candidates")
+    st.dataframe(st.session_state["audio_candidates_df"], use_container_width=True)
 
 st.sidebar.header("Scale")
 wheel_diameter_m = st.sidebar.number_input("Wheel diameter in meters", min_value=0.10, max_value=2.00, value=0.67, step=0.01)
 manual_pixels_per_meter = st.sidebar.number_input("Pixels per meter", min_value=1.0, value=400.0, step=1.0)
-calibration_frame = st.sidebar.number_input("Calibration frame", min_value=0, max_value=max(total_frames - 1, 0), value=int(start_frame), step=1)
+
+safe_calibration_frame = clamp_frame(start_frame, total_frames)
+
+calibration_frame = st.sidebar.number_input(
+    "Calibration frame",
+    min_value=0,
+    max_value=max_start_frame,
+    value=safe_calibration_frame,
+    step=1,
+)
 
 first_frame = get_frame(video_path, calibration_frame)
+
 if first_frame is not None:
     preview = first_frame.copy()
     x, y, w, h = roi
@@ -591,7 +862,11 @@ if st.sidebar.button("Try wheel scale") and first_frame is not None:
         st.session_state["pixels_per_meter"] = float(found_ppm)
 
 if "wheel_preview" in st.session_state:
-    st.image(st.session_state["wheel_preview"], caption=st.session_state.get("wheel_message", "Wheel check"), use_container_width=True)
+    st.image(
+        st.session_state["wheel_preview"],
+        caption=st.session_state.get("wheel_message", "Wheel check"),
+        use_container_width=True,
+    )
 
 pixels_per_meter = st.sidebar.number_input(
     "Final pixels per meter",
@@ -626,6 +901,7 @@ if run_analysis:
 
     athlete = athlete_name.strip() if athlete_name.strip() else "Unknown athlete"
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     df.insert(0, "date_time", now)
     df.insert(0, "athlete", athlete)
     df.insert(2, "model", model_name)
@@ -635,7 +911,9 @@ if run_analysis:
     summary = get_metric_summary(df)
 
     st.subheader("Main results")
+
     col1, col2, col3, col4 = st.columns(4)
+
     col1.metric("Velocity at start", "n/a" if np.isnan(summary["v_start"]) else f"{summary['v_start']:.2f} m/s")
     col2.metric("Time to 30 cm", "not reached" if np.isnan(summary["t_30cm"]) else f"{summary['t_30cm']:.3f} s")
     col3.metric("Peak velocity before start", "n/a" if np.isnan(summary["peak_before"]) else f"{summary['peak_before']:.2f} m/s")
@@ -646,6 +924,7 @@ if run_analysis:
     if preview_frames:
         st.subheader("Pose check")
         cols = st.columns(min(len(preview_frames), 4))
+
         for index, image in enumerate(preview_frames[:4]):
             cols[index % len(cols)].image(image, use_container_width=True)
 
@@ -658,7 +937,10 @@ if run_analysis:
             plot_df,
             x="time_s",
             y="hip_forward_velocity_smooth_m_s",
-            labels={"time_s": "Time from start (s)", "hip_forward_velocity_smooth_m_s": "Hip forward velocity (m/s)"},
+            labels={
+                "time_s": "Time from start (s)",
+                "hip_forward_velocity_smooth_m_s": "Hip forward velocity (m/s)",
+            },
         )
         add_start_line(fig)
         st.plotly_chart(fig, use_container_width=True)
@@ -668,13 +950,24 @@ if run_analysis:
             plot_df,
             x="time_s",
             y="com_forward_m",
-            labels={"time_s": "Time from start (s)", "com_forward_m": "Body forward movement (m)"},
+            labels={
+                "time_s": "Time from start (s)",
+                "com_forward_m": "Body forward movement (m)",
+            },
         )
         add_start_line(fig)
         fig.add_hline(y=0.30, line_dash="dash", annotation_text="30 cm")
         st.plotly_chart(fig, use_container_width=True)
 
-        fig2 = px.scatter(plot_df, x="com_x_m", y="com_y_m", labels={"com_x_m": "Body X (m)", "com_y_m": "Body Y (m)"})
+        fig2 = px.scatter(
+            plot_df,
+            x="com_x_m",
+            y="com_y_m",
+            labels={
+                "com_x_m": "Body X (m)",
+                "com_y_m": "Body Y (m)",
+            },
+        )
         st.plotly_chart(fig2, use_container_width=True)
 
     with tab3:
@@ -682,7 +975,10 @@ if run_analysis:
             plot_df,
             x="time_s",
             y="knee_angle_smooth_deg",
-            labels={"time_s": "Time from start (s)", "knee_angle_smooth_deg": "Knee angle (degree)"},
+            labels={
+                "time_s": "Time from start (s)",
+                "knee_angle_smooth_deg": "Knee angle (degree)",
+            },
         )
         add_start_line(fig)
         st.plotly_chart(fig, use_container_width=True)
@@ -691,6 +987,7 @@ if run_analysis:
         st.dataframe(df, use_container_width=True)
 
     csv = df.to_csv(index=False).encode("utf-8")
+
     st.download_button(
         "Download CSV",
         data=csv,
