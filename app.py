@@ -444,6 +444,84 @@ def detect_start_gun_frame(video_path, search_start_s=0.0, search_end_s=None, se
         return 0, 0.0, f"Audio check failed: {error}", pd.DataFrame(), pd.DataFrame()
 
 
+def detect_start_gate_red_area(frame, roi=None):
+    if frame is None:
+        return None, "No frame was found."
+
+    preview = frame.copy()
+
+    if roi is not None:
+        x, y, w, h = roi
+        search_area = frame[y : y + h, x : x + w]
+        offset_x = x
+        offset_y = y
+    else:
+        search_area = frame
+        offset_x = 0
+        offset_y = 0
+
+    hsv = cv2.cvtColor(search_area, cv2.COLOR_BGR2HSV)
+
+    lower_red_1 = np.array([0, 70, 50])
+    upper_red_1 = np.array([10, 255, 255])
+
+    lower_red_2 = np.array([170, 70, 50])
+    upper_red_2 = np.array([180, 255, 255])
+
+    mask_1 = cv2.inRange(hsv, lower_red_1, upper_red_1)
+    mask_2 = cv2.inRange(hsv, lower_red_2, upper_red_2)
+    mask = mask_1 + mask_2
+
+    kernel = np.ones((7, 7), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        return preview, "No clear red start gate area was found."
+
+    valid_contours = []
+
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < 500:
+            continue
+
+        x, y, w, h = cv2.boundingRect(contour)
+
+        if w < 20 or h < 20:
+            continue
+
+        valid_contours.append((area, x, y, w, h))
+
+    if not valid_contours:
+        return preview, "Red areas were found, but they were too small."
+
+    valid_contours.sort(reverse=True, key=lambda item: item[0])
+
+    area, x, y, w, h = valid_contours[0]
+
+    x1 = x + offset_x
+    y1 = y + offset_y
+    x2 = x1 + w
+    y2 = y1 + h
+
+    cv2.rectangle(preview, (x1, y1), (x2, y2), (0, 220, 0), 3)
+    cv2.putText(
+        preview,
+        "Possible start gate",
+        (x1, max(y1 - 10, 25)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 220, 0),
+        2,
+    )
+
+    message = f"Possible start gate found. Box: x={x1}, y={y1}, width={w}, height={h}"
+    return preview, message
+
+
 def detect_wheel_pixels(frame, roi, wheel_diameter_m):
     if frame is None:
         return None, None, "No frame was found."
@@ -1014,6 +1092,26 @@ elif scale_method == "Automatic wheel circle" and first_frame is not None:
         if found_ppm is not None:
             st.session_state["pixels_per_meter"] = float(found_ppm)
 
+st.sidebar.header("Vision tools")
+
+if st.sidebar.button("Find start gate") and first_frame is not None:
+    gate_preview, gate_message = detect_start_gate_red_area(first_frame, roi=None)
+
+    st.session_state["gate_message"] = gate_message
+
+    if gate_preview is not None:
+        st.session_state["gate_preview"] = cv2.cvtColor(gate_preview, cv2.COLOR_BGR2RGB)
+
+if "gate_message" in st.session_state:
+    st.sidebar.write(st.session_state["gate_message"])
+
+if "gate_preview" in st.session_state:
+    st.image(
+        st.session_state["gate_preview"],
+        caption="Start gate check",
+        use_container_width=True,
+    )
+    
     if "wheel_preview" in st.session_state:
         st.image(
             st.session_state["wheel_preview"],
