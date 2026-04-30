@@ -264,6 +264,21 @@ def draw_keypoints(frame, keypoints, side):
 
     return output
 
+def build_preview_targets(start_frame, fps):
+    offsets = [-0.50, -0.25, 0.00, 0.25, 0.50]
+
+    targets = []
+    for offset in offsets:
+        frame_number = int(round(start_frame + offset * fps))
+        targets.append(
+            {
+                "label": f"T = {offset:+.2f} s",
+                "frame": frame_number,
+                "offset": offset,
+            }
+        )
+
+    return targets
 
 @st.cache_data(show_spinner=False)
 def detect_start_gun_frame(video_path, search_start_s=0.0, search_end_s=None, selection_mode="Last strong peak"):
@@ -567,6 +582,9 @@ def process_video(video_path, model_name, roi, side, pixels_per_meter, start_fra
 
     rows = []
     preview_frames = []
+    preview_targets = build_preview_targets(start_frame, fps)
+    captured_preview_frames = set()
+
     frame_number = -1
     processed = 0
 
@@ -633,16 +651,25 @@ def process_video(video_path, model_name, roi, side, pixels_per_meter, start_fra
                         use_container_width=True,
                     )
 
-                if live_frame is not None and (
-                    len(preview_frames) < 5
-                    or frame_number
-                    in [
-                        start_frame,
-                        start_frame + int(fps * 0.25),
-                        start_frame + int(fps * 0.5),
-                    ]
-                ):
-                    preview_frames.append(cv2.cvtColor(live_frame, cv2.COLOR_BGR2RGB))
+                if live_frame is not None:
+                    for target in preview_targets:
+                        target_frame = target["frame"]
+
+                        if target_frame < 0 or target_frame >= total_frames:
+                            continue
+
+                        if target["label"] in captured_preview_frames:
+                            continue
+
+                        if abs(frame_number - target_frame) <= 1:
+                            preview_frames.append(
+                                {
+                                    "label": target["label"],
+                                    "frame": frame_number,
+                                    "image": cv2.cvtColor(live_frame, cv2.COLOR_BGR2RGB),
+                                }
+                            )
+                            captured_preview_frames.add(target["label"])
 
     cap.release()
     progress.empty()
@@ -1052,10 +1079,19 @@ if run_analysis:
 
     if preview_frames:
         st.subheader("Pose check")
-        cols = st.columns(min(len(preview_frames), 4))
 
-        for index, image in enumerate(preview_frames[:4]):
-            cols[index % len(cols)].image(image, use_container_width=True)
+    cols = st.columns(min(len(preview_frames), 5))
+
+    for index, preview_item in enumerate(preview_frames[:5]):
+        label = preview_item["label"]
+        frame = preview_item["frame"]
+        image = preview_item["image"]
+
+        cols[index % len(cols)].image(
+            image,
+            caption=f"{label} | frame {frame}",
+            use_container_width=True,
+        )
 
     plot_df = df[(df["time_s"] >= plot_start) & (df["time_s"] <= plot_end)].copy()
 
