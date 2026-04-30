@@ -471,6 +471,47 @@ def detect_wheel_pixels(frame, roi, wheel_diameter_m):
 
     return pixels_per_meter, preview, "Wheel circle found. Please check if the circle is on the wheel."
 
+def calculate_pixels_per_meter_from_points(point_a, point_b, real_distance_m):
+    if real_distance_m <= 0:
+        return None
+
+    pixel_distance = float(np.linalg.norm(np.array(point_a) - np.array(point_b)))
+
+    if pixel_distance <= 0:
+        return None
+
+    return pixel_distance / real_distance_m
+
+
+def draw_manual_calibration_preview(frame, point_a, point_b):
+    if frame is None:
+        return None
+
+    preview = frame.copy()
+
+    point_a = (int(point_a[0]), int(point_a[1]))
+    point_b = (int(point_b[0]), int(point_b[1]))
+
+    cv2.circle(preview, point_a, 8, (0, 220, 0), -1)
+    cv2.circle(preview, point_b, 8, (0, 220, 0), -1)
+    cv2.line(preview, point_a, point_b, (0, 220, 0), 3)
+
+    pixel_distance = float(np.linalg.norm(np.array(point_a) - np.array(point_b)))
+
+    label_x = int((point_a[0] + point_b[0]) / 2)
+    label_y = int((point_a[1] + point_b[1]) / 2)
+
+    cv2.putText(
+        preview,
+        f"{pixel_distance:.1f} px",
+        (label_x, label_y - 10),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 220, 0),
+        2,
+    )
+
+    return preview
 
 def choose_mmpose_person(predictions, roi, target_x):
     best_keypoints = None
@@ -830,8 +871,21 @@ if "audio_candidates_df" in st.session_state and not st.session_state["audio_can
     st.dataframe(st.session_state["audio_candidates_df"], use_container_width=True)
 
 st.sidebar.header("Scale")
-wheel_diameter_m = st.sidebar.number_input("Wheel diameter in meters", min_value=0.10, max_value=2.00, value=0.67, step=0.01)
-manual_pixels_per_meter = st.sidebar.number_input("Pixels per meter", min_value=1.0, value=400.0, step=1.0)
+
+wheel_diameter_m = st.sidebar.number_input(
+    "Wheel diameter in meters",
+    min_value=0.10,
+    max_value=2.00,
+    value=0.67,
+    step=0.01,
+)
+
+manual_pixels_per_meter = st.sidebar.number_input(
+    "Fallback pixels per meter",
+    min_value=1.0,
+    value=400.0,
+    step=1.0,
+)
 
 safe_calibration_frame = clamp_frame(start_frame, total_frames)
 
@@ -846,27 +900,102 @@ calibration_frame = st.sidebar.number_input(
 first_frame = get_frame(video_path, calibration_frame)
 
 if first_frame is not None:
-    preview = first_frame.copy()
+    roi_preview = first_frame.copy()
     x, y, w, h = roi
-    cv2.rectangle(preview, (x, y), (x + w, y + h), (0, 220, 0), 3)
-    st.image(cv2.cvtColor(preview, cv2.COLOR_BGR2RGB), caption="Selected rider area", use_container_width=True)
+    cv2.rectangle(roi_preview, (x, y), (x + w, y + h), (0, 220, 0), 3)
 
-if st.sidebar.button("Try wheel scale") and first_frame is not None:
-    found_ppm, wheel_preview, wheel_message = detect_wheel_pixels(first_frame, roi, wheel_diameter_m)
-    st.session_state["wheel_message"] = wheel_message
-
-    if wheel_preview is not None:
-        st.session_state["wheel_preview"] = cv2.cvtColor(wheel_preview, cv2.COLOR_BGR2RGB)
-
-    if found_ppm is not None:
-        st.session_state["pixels_per_meter"] = float(found_ppm)
-
-if "wheel_preview" in st.session_state:
     st.image(
-        st.session_state["wheel_preview"],
-        caption=st.session_state.get("wheel_message", "Wheel check"),
+        cv2.cvtColor(roi_preview, cv2.COLOR_BGR2RGB),
+        caption="Selected rider area",
         use_container_width=True,
     )
+
+scale_method = st.sidebar.selectbox(
+    "Scale method",
+    ["Manual wheel diameter", "Automatic wheel circle"],
+)
+
+if scale_method == "Manual wheel diameter" and first_frame is not None:
+    st.sidebar.write("Set two points on the wheel edge.")
+
+    default_y = int(height * 0.62)
+    default_x_left = int(width * 0.28)
+    default_x_right = int(width * 0.40)
+
+    point_a_x = st.sidebar.slider(
+        "Point A x",
+        min_value=0,
+        max_value=max(width - 1, 0),
+        value=default_x_left,
+        step=1,
+    )
+
+    point_a_y = st.sidebar.slider(
+        "Point A y",
+        min_value=0,
+        max_value=max(height - 1, 0),
+        value=default_y,
+        step=1,
+    )
+
+    point_b_x = st.sidebar.slider(
+        "Point B x",
+        min_value=0,
+        max_value=max(width - 1, 0),
+        value=default_x_right,
+        step=1,
+    )
+
+    point_b_y = st.sidebar.slider(
+        "Point B y",
+        min_value=0,
+        max_value=max(height - 1, 0),
+        value=default_y,
+        step=1,
+    )
+
+    point_a = (point_a_x, point_a_y)
+    point_b = (point_b_x, point_b_y)
+
+    manual_preview = draw_manual_calibration_preview(first_frame, point_a, point_b)
+
+    if manual_preview is not None:
+        st.image(
+            cv2.cvtColor(manual_preview, cv2.COLOR_BGR2RGB),
+            caption="Manual wheel calibration",
+            use_container_width=True,
+        )
+
+    manual_ppm = calculate_pixels_per_meter_from_points(point_a, point_b, wheel_diameter_m)
+
+    if manual_ppm is not None:
+        st.sidebar.write(f"Measured wheel diameter: {manual_ppm * wheel_diameter_m:.1f} px")
+        st.sidebar.write(f"Calculated pixels per meter: {manual_ppm:.2f}")
+
+    if st.sidebar.button("Use manual scale") and manual_ppm is not None:
+        st.session_state["pixels_per_meter"] = float(manual_ppm)
+        st.session_state["wheel_message"] = "Manual wheel scale was applied."
+
+elif scale_method == "Automatic wheel circle" and first_frame is not None:
+    if st.sidebar.button("Try automatic wheel scale"):
+        found_ppm, wheel_preview, wheel_message = detect_wheel_pixels(first_frame, roi, wheel_diameter_m)
+        st.session_state["wheel_message"] = wheel_message
+
+        if wheel_preview is not None:
+            st.session_state["wheel_preview"] = cv2.cvtColor(wheel_preview, cv2.COLOR_BGR2RGB)
+
+        if found_ppm is not None:
+            st.session_state["pixels_per_meter"] = float(found_ppm)
+
+    if "wheel_preview" in st.session_state:
+        st.image(
+            st.session_state["wheel_preview"],
+            caption=st.session_state.get("wheel_message", "Wheel check"),
+            use_container_width=True,
+        )
+
+if "wheel_message" in st.session_state:
+    st.sidebar.write(st.session_state["wheel_message"])
 
 pixels_per_meter = st.sidebar.number_input(
     "Final pixels per meter",
