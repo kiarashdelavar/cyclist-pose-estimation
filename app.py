@@ -15,6 +15,91 @@ from moviepy import VideoFileClip
 st.set_page_config(page_title="Track Cycling Start Analysis", layout="wide")
 
 
+st.markdown(
+    """
+    <style>
+        .main .block-container {
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+            max-width: 1500px;
+        }
+
+        h1 {
+            font-size: 2.4rem !important;
+            font-weight: 800 !important;
+            letter-spacing: -0.03em;
+        }
+
+        h2, h3 {
+            font-weight: 750 !important;
+            letter-spacing: -0.02em;
+        }
+
+        [data-testid="stSidebar"] {
+            border-right: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        [data-testid="stMetric"] {
+            background: rgba(255, 255, 255, 0.035);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            padding: 1rem;
+            border-radius: 16px;
+        }
+
+        [data-testid="stInfo"] {
+            border-radius: 12px;
+        }
+
+        .section-card {
+            background: rgba(255, 255, 255, 0.035);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 18px;
+            padding: 1.1rem 1.25rem;
+            margin-bottom: 1rem;
+        }
+
+        .small-muted {
+            color: rgba(255, 255, 255, 0.68);
+            font-size: 0.92rem;
+        }
+
+        .setup-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.8rem;
+            margin-top: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .setup-item {
+            background: rgba(255, 255, 255, 0.035);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 14px;
+            padding: 0.85rem;
+        }
+
+        .setup-label {
+            color: rgba(255, 255, 255, 0.62);
+            font-size: 0.78rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .setup-value {
+            font-weight: 700;
+            font-size: 1rem;
+        }
+
+        @media (max-width: 900px) {
+            .setup-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
 KEYPOINTS = {
     "left_shoulder": 5,
     "right_shoulder": 6,
@@ -72,6 +157,8 @@ def reset_video_state_if_new_video(uploaded_video, total_frames, fps):
             "wheel_preview",
             "wheel_message",
             "pixels_per_meter",
+            "gate_preview",
+            "gate_message",
         ]
 
         for key in keys_to_clear:
@@ -264,6 +351,7 @@ def draw_keypoints(frame, keypoints, side):
 
     return output
 
+
 def build_preview_targets(start_frame, fps):
     offsets = [-0.50, -0.25, 0.00, 0.25, 0.50]
 
@@ -279,6 +367,7 @@ def build_preview_targets(start_frame, fps):
         )
 
     return targets
+
 
 @st.cache_data(show_spinner=False)
 def detect_start_gun_frame(video_path, search_start_s=0.0, search_end_s=None, selection_mode="Last strong peak"):
@@ -348,12 +437,7 @@ def detect_start_gun_frame(video_path, search_start_s=0.0, search_end_s=None, se
         onset_norm = normalize_signal(onset)
         volume_change_norm = normalize_signal(volume_change)
 
-        gun_score = (
-            0.50 * volume_norm
-            + 0.35 * onset_norm
-            + 0.15 * volume_change_norm
-        )
-
+        gun_score = 0.50 * volume_norm + 0.35 * onset_norm + 0.15 * volume_change_norm
         gun_score_norm = normalize_signal(gun_score)
 
         full_audio_df = pd.DataFrame(
@@ -499,7 +583,6 @@ def detect_start_gate_red_area(frame, roi=None):
         return preview, "Red areas were found, but they were too small."
 
     valid_contours.sort(reverse=True, key=lambda item: item[0])
-
     area, x, y, w, h = valid_contours[0]
 
     x1 = x + offset_x
@@ -564,6 +647,7 @@ def detect_wheel_pixels(frame, roi, wheel_diameter_m):
 
     return pixels_per_meter, preview, "Wheel circle found. Please check if the circle is on the wheel."
 
+
 def calculate_pixels_per_meter_from_points(point_a, point_b, real_distance_m):
     if real_distance_m <= 0:
         return None
@@ -605,6 +689,7 @@ def draw_manual_calibration_preview(frame, point_a, point_b):
     )
 
     return preview
+
 
 def choose_mmpose_person(predictions, roi, target_x):
     best_keypoints = None
@@ -844,13 +929,37 @@ def get_metric_summary(df):
     }
 
 
+def style_plot(fig, title=None):
+    fig.update_layout(
+        title=title,
+        template="plotly_dark",
+        height=520,
+        margin=dict(l=20, r=20, t=50, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(255,255,255,0.02)",
+        font=dict(size=13),
+        hovermode="x unified",
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False)
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False)
+    return fig
+
+
 def add_start_line(fig):
     fig.add_vline(x=0, line_dash="dash", annotation_text="Start")
     return fig
 
 
 st.title("Track cycling start analysis")
-st.write("Upload a video. Pick the rider area. Then run the analysis.")
+st.markdown(
+    """
+    <div class="small-muted">
+        Upload a cycling start video, detect the gun moment, calibrate the wheel scale,
+        and inspect hip velocity, body movement, and knee angle around the start.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 uploaded_video = st.sidebar.file_uploader("Upload video", type=["mp4", "mov", "avi", "mkv"])
 
@@ -867,12 +976,17 @@ video_duration_s = total_frames / fps if fps > 0 else 0.0
 reset_video_state_if_new_video(uploaded_video, total_frames, fps)
 
 st.sidebar.header("Video data")
+st.sidebar.info("This section shows the basic video information used for frame and timing calculations.")
 st.sidebar.write(f"Frames: {total_frames}")
 st.sidebar.write(f"FPS: {fps:.2f}")
 st.sidebar.write(f"Size: {width} x {height}")
 st.sidebar.write(f"Duration: {video_duration_s:.2f} s")
 
 st.sidebar.header("Rider selection")
+st.sidebar.info(
+    "Select the pose model and rider area. Use Custom if there are other riders or people in the video."
+)
+
 model_name = st.sidebar.selectbox("Pose model", ["MediaPipe", "MMPose"])
 body_side = st.sidebar.selectbox("Body side for knee angle", ["Right body side", "Left body side"])
 roi_mode = st.sidebar.selectbox("Rider area", ["Full video", "Left side", "Middle", "Right side", "Custom"])
@@ -888,6 +1002,9 @@ roi = make_roi(width, height, roi_mode, custom_roi)
 target_x = roi[0] + roi[2] / 2
 
 st.sidebar.header("Start time")
+st.sidebar.info(
+    "Use this to find the gun sound. If the full video gives a wrong result, search only around the expected start moment."
+)
 
 audio_search_start = st.sidebar.number_input(
     "Search gun after seconds",
@@ -969,6 +1086,7 @@ if "audio_df" in st.session_state and not st.session_state["audio_df"].empty:
         annotation_text="Detected start gun",
     )
 
+    style_plot(audio_fig, "Audio gun detection score")
     st.plotly_chart(audio_fig, use_container_width=True)
 
 if "audio_candidates_df" in st.session_state and not st.session_state["audio_candidates_df"].empty:
@@ -976,6 +1094,9 @@ if "audio_candidates_df" in st.session_state and not st.session_state["audio_can
     st.dataframe(st.session_state["audio_candidates_df"], use_container_width=True)
 
 st.sidebar.header("Scale")
+st.sidebar.info(
+    "Use the front wheel to set the scale. Place two points on the left and right edge of the wheel, then click Use manual scale."
+)
 
 wheel_diameter_m = st.sidebar.number_input(
     "Wheel diameter in meters",
@@ -1027,37 +1148,10 @@ if scale_method == "Manual wheel diameter" and first_frame is not None:
     default_x_left = int(width * 0.28)
     default_x_right = int(width * 0.40)
 
-    point_a_x = st.sidebar.slider(
-        "Point A x",
-        min_value=0,
-        max_value=max(width - 1, 0),
-        value=default_x_left,
-        step=1,
-    )
-
-    point_a_y = st.sidebar.slider(
-        "Point A y",
-        min_value=0,
-        max_value=max(height - 1, 0),
-        value=default_y,
-        step=1,
-    )
-
-    point_b_x = st.sidebar.slider(
-        "Point B x",
-        min_value=0,
-        max_value=max(width - 1, 0),
-        value=default_x_right,
-        step=1,
-    )
-
-    point_b_y = st.sidebar.slider(
-        "Point B y",
-        min_value=0,
-        max_value=max(height - 1, 0),
-        value=default_y,
-        step=1,
-    )
+    point_a_x = st.sidebar.slider("Point A x", 0, max(width - 1, 0), default_x_left, step=1)
+    point_a_y = st.sidebar.slider("Point A y", 0, max(height - 1, 0), default_y, step=1)
+    point_b_x = st.sidebar.slider("Point B x", 0, max(width - 1, 0), default_x_right, step=1)
+    point_b_y = st.sidebar.slider("Point B y", 0, max(height - 1, 0), default_y, step=1)
 
     point_a = (point_a_x, point_a_y)
     point_b = (point_b_x, point_b_y)
@@ -1093,6 +1187,9 @@ elif scale_method == "Automatic wheel circle" and first_frame is not None:
             st.session_state["pixels_per_meter"] = float(found_ppm)
 
 st.sidebar.header("Vision tools")
+st.sidebar.info(
+    "This tool tries to find the start gate or timing machine in the frame. Use it as a visual check, not as a final measurement."
+)
 
 if st.sidebar.button("Find start gate") and first_frame is not None:
     gate_preview, gate_message = detect_start_gate_red_area(first_frame, roi=None)
@@ -1111,13 +1208,13 @@ if "gate_preview" in st.session_state:
         caption="Start gate check",
         use_container_width=True,
     )
-    
-    if "wheel_preview" in st.session_state:
-        st.image(
-            st.session_state["wheel_preview"],
-            caption=st.session_state.get("wheel_message", "Wheel check"),
-            use_container_width=True,
-        )
+
+if "wheel_preview" in st.session_state:
+    st.image(
+        st.session_state["wheel_preview"],
+        caption=st.session_state.get("wheel_message", "Wheel check"),
+        use_container_width=True,
+    )
 
 if "wheel_message" in st.session_state:
     st.sidebar.write(st.session_state["wheel_message"])
@@ -1130,6 +1227,10 @@ pixels_per_meter = st.sidebar.number_input(
 )
 
 st.sidebar.header("Run")
+st.sidebar.info(
+    "Add the athlete name before running. Use 0 for maximum frames if you want to process the full video."
+)
+
 athlete_name = st.sidebar.text_input("Athlete name", value="")
 max_frames = st.sidebar.number_input("Maximum frames to process. Use 0 for full video.", min_value=0, value=0, step=100)
 plot_start = st.sidebar.number_input("Plot start time", value=-0.6, step=0.1)
@@ -1164,6 +1265,50 @@ if run_analysis:
 
     summary = get_metric_summary(df)
 
+    st.subheader("Analysis setup")
+
+    detected_gun_time = st.session_state.get("detected_gun_time", start_frame / real_fps if real_fps else 0.0)
+
+    st.markdown(
+        f"""
+        <div class="setup-grid">
+            <div class="setup-item">
+                <div class="setup-label">Athlete</div>
+                <div class="setup-value">{athlete}</div>
+            </div>
+            <div class="setup-item">
+                <div class="setup-label">Pose model</div>
+                <div class="setup-value">{model_name}</div>
+            </div>
+            <div class="setup-item">
+                <div class="setup-label">Start frame</div>
+                <div class="setup-value">{start_frame}</div>
+            </div>
+            <div class="setup-item">
+                <div class="setup-label">Start time</div>
+                <div class="setup-value">{detected_gun_time:.3f} s</div>
+            </div>
+            <div class="setup-item">
+                <div class="setup-label">FPS</div>
+                <div class="setup-value">{real_fps:.2f}</div>
+            </div>
+            <div class="setup-item">
+                <div class="setup-label">Scale</div>
+                <div class="setup-value">{pixels_per_meter:.2f} px/m</div>
+            </div>
+            <div class="setup-item">
+                <div class="setup-label">Rider area</div>
+                <div class="setup-value">{roi_mode}</div>
+            </div>
+            <div class="setup-item">
+                <div class="setup-label">Body side</div>
+                <div class="setup-value">{body_side}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.subheader("Main results")
 
     col1, col2, col3, col4 = st.columns(4)
@@ -1177,19 +1322,18 @@ if run_analysis:
 
     if preview_frames:
         st.subheader("Pose check")
+        cols = st.columns(min(len(preview_frames), 5))
 
-    cols = st.columns(min(len(preview_frames), 5))
+        for index, preview_item in enumerate(preview_frames[:5]):
+            label = preview_item["label"]
+            frame = preview_item["frame"]
+            image = preview_item["image"]
 
-    for index, preview_item in enumerate(preview_frames[:5]):
-        label = preview_item["label"]
-        frame = preview_item["frame"]
-        image = preview_item["image"]
-
-        cols[index % len(cols)].image(
-            image,
-            caption=f"{label} | frame {frame}",
-            use_container_width=True,
-        )
+            cols[index % len(cols)].image(
+                image,
+                caption=f"{label} | frame {frame}",
+                use_container_width=True,
+            )
 
     plot_df = df[(df["time_s"] >= plot_start) & (df["time_s"] <= plot_end)].copy()
 
@@ -1206,6 +1350,7 @@ if run_analysis:
             },
         )
         add_start_line(fig)
+        style_plot(fig, "Hip forward velocity around start")
         st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
@@ -1220,6 +1365,7 @@ if run_analysis:
         )
         add_start_line(fig)
         fig.add_hline(y=0.30, line_dash="dash", annotation_text="30 cm")
+        style_plot(fig, "Body forward movement around start")
         st.plotly_chart(fig, use_container_width=True)
 
         fig2 = px.scatter(
@@ -1231,6 +1377,7 @@ if run_analysis:
                 "com_y_m": "Body Y (m)",
             },
         )
+        style_plot(fig2, "Body movement path")
         st.plotly_chart(fig2, use_container_width=True)
 
     with tab3:
@@ -1244,6 +1391,7 @@ if run_analysis:
             },
         )
         add_start_line(fig)
+        style_plot(fig, "Knee angle around start")
         st.plotly_chart(fig, use_container_width=True)
 
     with tab4:
