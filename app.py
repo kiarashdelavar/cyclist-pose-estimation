@@ -750,6 +750,8 @@ def process_video(video_path, model_name, roi, side, pixels_per_meter, start_fra
 
     frame_number = -1
     processed = 0
+    frames_processed = 0
+    frames_with_keypoints = 0
 
     progress = st.progress(0)
     status = st.empty()
@@ -767,6 +769,8 @@ def process_video(video_path, model_name, roi, side, pixels_per_meter, start_fra
             break
 
         processed += 1
+        frames_processed += 1
+
         progress_total = min(total_frames, max_frames if max_frames > 0 else total_frames)
 
         if progress_total > 0:
@@ -794,6 +798,8 @@ def process_video(video_path, model_name, roi, side, pixels_per_meter, start_fra
             keypoints = choose_mmpose_person(predictions, roi, target_x)
 
         if keypoints is not None:
+            frames_with_keypoints += 1
+
             row = build_measurement(
                 frame_number,
                 fps,
@@ -838,13 +844,18 @@ def process_video(video_path, model_name, roi, side, pixels_per_meter, start_fra
     progress.empty()
     status.empty()
 
+    quality = {
+        "frames_processed": frames_processed,
+        "frames_with_keypoints": frames_with_keypoints,
+    }
+
     if not rows:
-        return pd.DataFrame(), preview_frames, fps
+        return pd.DataFrame(), preview_frames, fps, quality
 
     df = pd.DataFrame(rows)
     df = add_metrics(df, fps)
 
-    return df, preview_frames, fps
+    return df, preview_frames, fps, quality
 
 
 def add_metrics(df, fps):
@@ -886,6 +897,35 @@ def add_metrics(df, fps):
 
     return df
 
+def get_pose_quality_summary(df, quality):
+    usable_frames = int(len(df))
+
+    if quality["frames_processed"] == 0:
+        pose_found_rate = 0.0
+        usable_pose_rate = 0.0
+    else:
+        pose_found_rate = (quality["frames_with_keypoints"] / quality["frames_processed"]) * 100
+        usable_pose_rate = (usable_frames / quality["frames_processed"]) * 100
+
+    if df.empty:
+        average_knee_angle = np.nan
+        average_hip_velocity = np.nan
+        average_body_movement = np.nan
+    else:
+        average_knee_angle = float(df["knee_angle_deg"].mean())
+        average_hip_velocity = float(df["hip_forward_velocity_smooth_m_s"].dropna().mean())
+        average_body_movement = float(df["com_forward_m"].max())
+
+    return {
+        "frames_processed": quality["frames_processed"],
+        "frames_with_keypoints": quality["frames_with_keypoints"],
+        "usable_frames": usable_frames,
+        "pose_found_rate": pose_found_rate,
+        "usable_pose_rate": usable_pose_rate,
+        "average_knee_angle": average_knee_angle,
+        "average_hip_velocity": average_hip_velocity,
+        "average_body_movement": average_body_movement,
+    }
 
 def get_metric_summary(df):
     after = df[df["time_s"] >= 0]
@@ -1239,7 +1279,7 @@ plot_end = st.sidebar.number_input("Plot end time", value=0.8, step=0.1)
 run_analysis = st.button("Run analysis", type="primary")
 
 if run_analysis:
-    df, preview_frames, real_fps = process_video(
+    df, preview_frames, real_fps, quality = process_video(
         video_path=video_path,
         model_name=model_name,
         roi=roi,
@@ -1264,8 +1304,59 @@ if run_analysis:
     df.insert(4, "pixels_per_meter", pixels_per_meter)
 
     summary = get_metric_summary(df)
-
+    pose_quality = get_pose_quality_summary(df, quality)
     st.subheader("Analysis setup")
+    
+    st.subheader("Pose quality summary")
+
+    quality_col1, quality_col2, quality_col3, quality_col4 = st.columns(4)
+
+    quality_col1.metric(
+    "Frames processed",
+    pose_quality["frames_processed"],
+    )
+
+    quality_col2.metric(
+    "Frames with pose",
+    pose_quality["frames_with_keypoints"],
+    )
+
+    quality_col3.metric(
+    "Usable pose frames",
+    f"{pose_quality['usable_pose_rate']:.1f}%",
+    )
+
+    quality_col4.metric(
+    "Average knee angle",
+    "n/a" if np.isnan(pose_quality["average_knee_angle"]) else f"{pose_quality['average_knee_angle']:.1f}°",
+    )
+
+    quality_col5, quality_col6, quality_col7, quality_col8 = st.columns(4)
+
+    quality_col5.metric(
+    "Pose found rate",
+    f"{pose_quality['pose_found_rate']:.1f}%",
+    )
+
+    quality_col6.metric(
+    "Average hip velocity",
+    "n/a" if np.isnan(pose_quality["average_hip_velocity"]) else f"{pose_quality['average_hip_velocity']:.2f} m/s",
+    )
+
+    quality_col7.metric(
+    "Max body movement",
+    "n/a" if np.isnan(pose_quality["average_body_movement"]) else f"{pose_quality['average_body_movement']:.2f} m",
+    )
+
+    quality_col8.metric(
+    "Model checked",
+    model_name,
+    )
+
+    st.write(
+    "Pose quality helps you check if the selected model and rider area worked well. "
+    "A low usable pose percentage means the ROI, model, or video quality should be checked."
+    )
 
     detected_gun_time = st.session_state.get("detected_gun_time", start_frame / real_fps if real_fps else 0.0)
 
