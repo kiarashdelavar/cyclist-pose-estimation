@@ -8,6 +8,7 @@ The goal is to support track cycling start analysis by using video and audio dat
 
 - Upload a cycling start video
 - Select the rider area using a full-video or custom region of interest
+- Show pose quality summary to compare model reliability
 - Detect the start gun from the video audio
 - Show the detected start moment as frame and timestamp
 - Preview key frames around the start moment
@@ -42,6 +43,17 @@ The app currently generates:
 - Librosa
 - Plotly
 - Pandas / NumPy
+
+## Model Choice
+
+The app supports two pose models:
+
+- **MediaPipe**: faster and useful for quick testing.
+- **MMPose**: slower, but usually gives better pose quality and is preferred for more accurate analysis.
+
+The app also shows a **pose quality summary** after running the analysis. This helps check whether the selected model and rider area worked well for the video.
+
+For this MVP, both models can be tested, but MMPose is the better option when accuracy is more important than speed.
 
 ## How to Use
 
