@@ -55,6 +55,44 @@ The app also shows a **pose quality summary** after running the analysis. This h
 
 For this MVP, both models can be tested, but MMPose is the better option when accuracy is more important than speed.
 
+## MVP Screenshots
+
+### App overview
+
+The app shows the main workflow with video upload, rider selection, start setup, scale setup, and analysis controls.
+
+![App overview](docs/images/app-overview.png)
+
+### Start gun detection
+
+The start gun is detected from the video audio and converted into a start frame and timestamp.
+
+![Start gun detection](docs/images/start-gun-detection.png)
+
+### Wheel scale calibration
+
+The front wheel can be used to estimate pixels per meter for movement and velocity calculations.
+
+![Wheel scale calibration](docs/images/wheel-scale-calibration.png)
+
+### Analysis summary
+
+After running the analysis, the app shows pose quality, setup details, main results, and key preview frames.
+
+![Analysis summary](docs/images/analysis-summary.png)
+
+### Hip velocity graph
+
+The hip velocity graph shows estimated forward hip velocity around the detected start moment.
+
+![Hip velocity graph](docs/images/hip-velocity-graph.png)
+
+### MMPose pose tracking
+
+MMPose can be used to track the rider body points and calculate knee angle during the start phase.
+
+![MMPose pose tracking](docs/images/mmpose-pose-tracking.png)
+
 ## How to Use
 
 1. Upload a cycling start video.
